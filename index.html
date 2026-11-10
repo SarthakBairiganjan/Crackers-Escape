@@ -25,7 +25,7 @@ button{border:0;border-radius:12px;padding:13px 22px;background:#ffd54f;color:#2
 <canvas id="c"></canvas>
 
 <div id="hud">
-  <div class="badge">❤️ <span id="lives">3</span> &nbsp; 🏆 <span id="score">0</span></div>
+  <div class="badge">❤️ <span id="lives">3</span> &nbsp; 🏆 <span id="score">0</span> &nbsp; 🪙 <span id="coins">0</span></div>
   <div class="badge">⏱ <span id="time">60</span></div>
 </div>
 
@@ -67,10 +67,12 @@ const canvas=document.getElementById("c");
 const ctx=canvas.getContext("2d");
 let W=0,H=0;
 let running=false;
-let score=0,lives=3,time=60;
+let score=0,lives=3,time=60,coins=0;
 let player={x:80,y:0,w:32,h:48,vy:0,ground:false};
 let obstacles=[];
+let coinsList=[];
 let particles=[];
+let fireworks=[];
 let last=0,spawnTimer=0;
 
 function resize(){
@@ -97,36 +99,48 @@ function startCrackerSound(){
   if(bgTimer)return;
   try{
     bgAudio=bgAudio||new (window.AudioContext||window.webkitAudioContext)();
-    if(bgAudio.state==="suspended")bgAudio.resume();
-    const crack=()=>{
-      if(!running)return;
-      const t=bgAudio.currentTime;
-      const o=bgAudio.createOscillator(), g=bgAudio.createGain();
-      const f=bgAudio.createBiquadFilter();
-      o.type="sawtooth";
-      o.frequency.setValueAtTime(120+Math.random()*100,t);
-      o.frequency.exponentialRampToValueAtTime(42,t+.055);
-      f.type="lowpass"; f.frequency.value=900;
-      g.gain.setValueAtTime(.0001,t);
-      g.gain.exponentialRampToValueAtTime(.045,t+.006);
-      g.gain.exponentialRampToValueAtTime(.0001,t+.09);
-      o.connect(f);f.connect(g);g.connect(bgAudio.destination);
-      o.start(t);o.stop(t+.1);
-      // small secondary pop
+    if(bgAudio.state==='suspended')bgAudio.resume();
+    const burst=()=>{
+      if(!running){ stopCrackerSound(); return; }
+      const now=bgAudio.currentTime;
+      // Sharp firecracker pop + short crackle noise, synthesized locally.
+      const pop=bgAudio.createOscillator(), pg=bgAudio.createGain();
+      pop.type='triangle';
+      pop.frequency.setValueAtTime(180+Math.random()*180,now);
+      pop.frequency.exponentialRampToValueAtTime(55,now+.09);
+      pg.gain.setValueAtTime(.0001,now);
+      pg.gain.exponentialRampToValueAtTime(.16,now+.004);
+      pg.gain.exponentialRampToValueAtTime(.0001,now+.13);
+      pop.connect(pg);pg.connect(bgAudio.destination);pop.start(now);pop.stop(now+.14);
+
+      const buffer=bgAudio.createBuffer(1,bgAudio.sampleRate*.12,bgAudio.sampleRate);
+      const data=buffer.getChannelData(0);
+      for(let i=0;i<data.length;i++) data[i]=(Math.random()*2-1)*(1-i/data.length);
+      const noise=bgAudio.createBufferSource(), ng=bgAudio.createGain(), nf=bgAudio.createBiquadFilter();
+      nf.type='highpass'; nf.frequency.value=900;
+      ng.gain.setValueAtTime(.0001,now+.01);
+      ng.gain.exponentialRampToValueAtTime(.055,now+.018);
+      ng.gain.exponentialRampToValueAtTime(.0001,now+.11);
+      noise.buffer=buffer;noise.connect(nf);nf.connect(ng);ng.connect(bgAudio.destination);noise.start(now+.01);
+
+      // Tiny delayed secondary pops to mimic a festive cracker chain.
       if(Math.random()<.7){
-        const p=bgAudio.createOscillator(),pg=bgAudio.createGain();
-        p.type="square";p.frequency.value=55+Math.random()*80;
-        pg.gain.setValueAtTime(.025,t+.018);
-        pg.gain.exponentialRampToValueAtTime(.0001,t+.12);
-        p.connect(pg);pg.connect(bgAudio.destination);p.start(t+.018);p.stop(t+.13);
+        setTimeout(()=>{ if(running) burstSmallPop(); },55+Math.random()*90);
       }
+      bgTimer=setTimeout(burst,520+Math.random()*1050);
     };
-    crack();
-    bgTimer=setInterval(()=>{ if(running) crack(); else stopCrackerSound(); }, 650+Math.random()*700);
+    const burstSmallPop=()=>{
+      const t=bgAudio.currentTime;
+      const o=bgAudio.createOscillator(),g=bgAudio.createGain();
+      o.type='square';o.frequency.setValueAtTime(95+Math.random()*80,t);o.frequency.exponentialRampToValueAtTime(38,t+.055);
+      g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.055,t+.003);g.gain.exponentialRampToValueAtTime(.0001,t+.075);
+      o.connect(g);g.connect(bgAudio.destination);o.start(t);o.stop(t+.08);
+    };
+    burst();
   }catch(e){}
 }
 function stopCrackerSound(){
-  if(bgTimer){clearInterval(bgTimer);bgTimer=null}
+  if(bgTimer){clearTimeout(bgTimer);bgTimer=null;}
 }
 
 function startGame(){
@@ -135,13 +149,14 @@ function startGame(){
   document.getElementById("over").classList.add("hidden");
   document.getElementById("win").classList.add("hidden");
 
-  score=0;lives=3;time=60;
-  obstacles=[];particles=[];
+  score=0;lives=3;time=60;coins=0;
+  obstacles=[];coinsList=[];particles=[];fireworks=[];
   player.x=Math.max(50,W*.15);
   player.y=ground()-player.h;
   player.vy=0;
   player.ground=true;
   spawnTimer=.8;
+  for(let i=0;i<5;i++) spawnFirework(true);
   running=true;
   last=performance.now();
   updateHUD();
@@ -176,6 +191,12 @@ window.addEventListener("keydown",e=>{
   }
 });
 
+function addCoin(){
+  coinsList.push({x:W+30,y:ground()-80-Math.random()*150,r:11,speed:300+Math.min(160,(60-time)*5),phase:Math.random()*Math.PI*2});
+}
+function spawnFirework(initial=false){
+  fireworks.push({x:40+Math.random()*Math.max(80,W-80),y:45+Math.random()*Math.max(70,Math.min(220,H*.42)),life:1.1,delay:initial?Math.random()*.8:0,color:['#ff4d6d','#ffd54f','#5be7ff','#b388ff'][Math.floor(Math.random()*4)]});
+}
 function addObstacle(){
   let size=34;
   obstacles.push({
@@ -210,6 +231,8 @@ function update(dt){
   spawnTimer-=dt;
   if(spawnTimer<=0){
     addObstacle();
+    if(Math.random()<.72) addCoin();
+    if(Math.random()<.12) spawnFirework();
     spawnTimer=Math.max(.55,1.05-(60-time)*.006);
   }
 
@@ -234,6 +257,22 @@ function update(dt){
     }
   }
 
+  for(let i=coinsList.length-1;i>=0;i--){
+    let c=coinsList[i];
+    c.x-=c.speed*dt;
+    c.phase+=dt*5;
+    let cy=c.y+Math.sin(c.phase)*5;
+    if(hitCircle(player,c.x,cy,c.r)){
+      coinsList.splice(i,1);coins++;score+=25;
+    }else if(c.x+c.r<0) coinsList.splice(i,1);
+  }
+  for(let i=fireworks.length-1;i>=0;i--){
+    let f=fireworks[i];
+    f.life-=dt;
+    if(f.delay>0) f.delay-=dt;
+    if(f.life<=0) fireworks.splice(i,1);
+  }
+
   for(let i=particles.length-1;i>=0;i--){
     let p=particles[i];
     p.x+=p.vx*dt;
@@ -246,6 +285,12 @@ function update(dt){
   updateHUD();
 }
 
+function hitCircle(a,cx,cy,r){
+  let nx=Math.max(a.x,Math.min(cx,a.x+a.w));
+  let ny=Math.max(a.y,Math.min(cy,a.y+a.h));
+  return (nx-cx)*(nx-cx)+(ny-cy)*(ny-cy)<r*r;
+}
+
 function hit(a,b){
   return a.x<b.x+b.w && a.x+a.w>b.x &&
          a.y<b.y+b.h && a.y+a.h>b.y;
@@ -254,6 +299,7 @@ function hit(a,b){
 function updateHUD(){
   document.getElementById("lives").textContent=lives;
   document.getElementById("score").textContent=score;
+  document.getElementById("coins").textContent=coins;
   document.getElementById("time").textContent=Math.ceil(time);
 }
 
@@ -284,16 +330,23 @@ function draw(){
     ctx.fillRect(x,y,2,2);
   }
 
-  // Fireworks
-  drawFirework(W*.25,100,"#ff5bbd");
-  drawFirework(W*.65,140,"#5be7ff");
+  // Animated fireworks in the night sky
+  for(const f of fireworks) drawFirework(f.x,f.y,f.color,Math.max(0,1-f.life/1.1));
 
   // Ground
   ctx.fillStyle="#3c2444";
   ctx.fillRect(0,ground(),W,H-ground());
 
-  // Diyas
-  for(let i=50;i<W;i+=Math.max(180,W/4))drawDiya(i,ground()+25);
+  // Diyas along the festive ground
+  for(let i=45;i<W;i+=Math.max(150,W/5))drawDiya(i,ground()+25);
+
+  // Floating collectible coins
+  for(const c of coinsList){
+    let cy=c.y+Math.sin(c.phase)*5;
+    ctx.fillStyle="#ffd54f";
+    ctx.beginPath();ctx.arc(c.x,cy,c.r,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="#fff3a1";ctx.font="bold 12px Arial";ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText("₹",c.x,cy);
+  }
 
   // Obstacles
   for(const o of obstacles){
@@ -307,19 +360,8 @@ function draw(){
     ctx.fill();
   }
 
-  // Player
-  ctx.fillStyle="#e53935";
-  ctx.fillRect(player.x,player.y+18,player.w,30);
-  ctx.fillStyle="#ffd8b4";
-  ctx.beginPath();
-  ctx.arc(player.x+16,player.y+10,12,0,Math.PI*2);
-  ctx.fill();
-  ctx.fillStyle="#4b2518";
-  ctx.beginPath();
-  ctx.arc(player.x+16,player.y+5,13,Math.PI,Math.PI*2);
-  ctx.fill();
-  ctx.fillStyle="#fff";
-  ctx.fillRect(player.x+6,player.y+25,20,20);
+  // Boy running icon
+  drawBoy(player.x,player.y,performance.now()/120);
 
   // Burst particles
   for(const p of particles){
@@ -343,16 +385,40 @@ function drawDiya(x,y){
   ctx.fill();
 }
 
-function drawFirework(x,y,color){
-  ctx.strokeStyle=color;
-  ctx.lineWidth=2;
-  for(let i=0;i<12;i++){
-    let a=i*Math.PI/6;
-    ctx.beginPath();
-    ctx.moveTo(x+Math.cos(a)*6,y+Math.sin(a)*6);
-    ctx.lineTo(x+Math.cos(a)*28,y+Math.sin(a)*28);
-    ctx.stroke();
+function drawFirework(x,y,color,progress){
+  progress=progress||0;
+  ctx.save();ctx.globalAlpha=.25+.75*(1-progress);ctx.strokeStyle=color;ctx.fillStyle=color;ctx.lineWidth=2;
+  let radius=10+30*progress;
+  for(let i=0;i<16;i++){
+    let a=i*Math.PI/8;
+    ctx.beginPath();ctx.moveTo(x+Math.cos(a)*4,y+Math.sin(a)*4);ctx.lineTo(x+Math.cos(a)*radius,y+Math.sin(a)*radius);ctx.stroke();
+    ctx.beginPath();ctx.arc(x+Math.cos(a)*radius,y+Math.sin(a)*radius,2.5,0,Math.PI*2);ctx.fill();
   }
+  ctx.restore();
+}
+
+function drawBoy(x,y,t){
+  const swing=Math.sin(t)*4;
+  ctx.save();
+  // shadow
+  ctx.fillStyle='rgba(0,0,0,.25)';ctx.beginPath();ctx.ellipse(x+17,y+49,17,4,0,0,Math.PI*2);ctx.fill();
+  // legs in running pose
+  ctx.strokeStyle='#193a8a';ctx.lineWidth=7;ctx.lineCap='round';
+  ctx.beginPath();ctx.moveTo(x+15,y+34);ctx.lineTo(x+7+swing,y+47);ctx.lineTo(x-1+swing,y+47);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(x+18,y+34);ctx.lineTo(x+27-swing,y+43);ctx.lineTo(x+34-swing,y+43);ctx.stroke();
+  // red shirt/body
+  ctx.fillStyle='#e53935';ctx.beginPath();ctx.roundRect(x+6,y+16,22,20,7);ctx.fill();
+  // arms
+  ctx.strokeStyle='#ffd1b3';ctx.lineWidth=6;
+  ctx.beginPath();ctx.moveTo(x+8,y+20);ctx.lineTo(x-1-swing,y+29);ctx.lineTo(x-7-swing,y+25);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(x+26,y+20);ctx.lineTo(x+34+swing,y+12);ctx.lineTo(x+40+swing,y+17);ctx.stroke();
+  // head
+  ctx.fillStyle='#ffd1b3';ctx.beginPath();ctx.arc(x+17,y+9,10,0,Math.PI*2);ctx.fill();
+  // hair
+  ctx.fillStyle='#3b2418';ctx.beginPath();ctx.arc(x+17,y+6,10,Math.PI,Math.PI*2);ctx.fill();ctx.fillRect(x+7,y+5,5,6);
+  // eye
+  ctx.fillStyle='#222';ctx.beginPath();ctx.arc(x+21,y+9,1.2,0,Math.PI*2);ctx.fill();
+  ctx.restore();
 }
 
 function loop(now){
